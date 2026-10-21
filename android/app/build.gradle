@@ -19,15 +19,15 @@ if (onDevice && !(new File(ondev, 'stage/jniLibs/arm64-v8a/libzig.so').exists() 
 
 android {
     namespace 'com.lasrecomp.android'
-    compileSdk 36
-    ndkVersion '27.2.12479018'
+    compileSdk 34
+    ndkVersion '26.3.11579264'
 
     defaultConfig {
         applicationId 'com.lasrecomp.android'
         // -PlasTestId: installed beside the app (its own data folder; for testing on a phone that has it)
         if (project.hasProperty('lasTestId')) applicationIdSuffix '.test'
         minSdk 30          // Android 11: Vulkan 1.1+, AAudio, MAP_FIXED_NOREPLACE kernels
-        targetSdk 36
+        targetSdk 34
         versionCode((project.findProperty('lasVersionCode') ?: '1') as int)
         versionName project.findProperty('lasVersionName') ?: 'beta_4-android1'
         ndk {

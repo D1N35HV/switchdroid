@@ -817,8 +817,10 @@ static void tabs_body(float scale, bool in_game, void (*prelaunch)(float)) {
                                   "Cosmetics", "Controls", "Quit"};
     static const int order[] = {8, 0, 1, 6, 7, 3, 5, 4, 2, 9};  // Controls, Video, Audio, Gameplay, Cosmetics, Randomizer,
                                                                 // Cheats, Warp, Save Editor, Quit (ids stay: test hooks)
-    for (int i : order)  // (Quit: in game only - the start screen has its own QUIT, and an eleventh tab cut names short)
-        if (i != 9 || !prelaunch) tabs[ntabs++] = {names[i], i, in_game || (i != 2 && i != 4 && i != 5)};
+    // out of the game (the start screen's game settings) the tabs that need it aren't shown: Save Editor, Warp, Cheats;
+    // nor Quit (the home screen has its own)
+    for (int i : order)
+        if (in_game || (i != 2 && i != 4 && i != 5 && i != 9)) tabs[ntabs++] = {names[i], i, true};
     int cur = 0;  // g_tab / g_tab_request hold ids
     for (int i = 0; i < ntabs; i++) if (tabs[i].id == g_tab) cur = i;
     if (!tabs[cur].on) cur = 0;

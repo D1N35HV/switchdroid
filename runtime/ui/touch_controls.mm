@@ -464,6 +464,7 @@ extern "C" void touch_stick(int32_t *lx, int32_t *ly) { *lx = g_editing ? 0 : g_
 
 // ---- what the game shows, what Link has
 static int context(void) {
+    if (getenv("SWITCHRECOMP_ANY_GAME")) return X_PLAY;
     if (!game_in_play()) return X_TITLE;
     if (inventory_items_cursor() >= 0) return X_ITEMS;
     if (tracker_map_page_shown() || chaos_dgnmap_shown()) return X_MAP;
@@ -482,6 +483,9 @@ static const char *slot_icon(int slot) {
 static uint32_t g_items_word;
 static int g_slot_x, g_slot_y;  // (0 / 1, the sword's and shield's slots, never sit on X / Y: an empty one reads 0)
 static uint32_t wanted(int ctx) {
+    if (getenv("SWITCHRECOMP_ANY_GAME")) {
+        return M(C_STICK) | M(C_A) | M(C_B) | M(C_X) | M(C_Y) | M(C_L) | M(C_R) | M(C_ZL) | M(C_ZR) | M(C_PLUS) | M(C_MINUS) | M(C_MENU);
+    }
     uint32_t m = kShown[ctx];
     if (ctx == X_PLAY) {
         g_items_word = LD32(GUEST(GA_LIVE_SAVE) + 0x5568);

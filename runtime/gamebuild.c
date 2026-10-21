@@ -497,6 +497,16 @@ static bool start_gen(const Tools *t, Gen *g, const char *game_dir, const char *
     add(&a, base);
     add(&a, g->out);
     if (hle) { add(&a, "--hle"); add(&a, t->hle); }
+    const char *env_patches = getenv("SWITCHRECOMP_PATCHES");
+    char custom_patches[1100];
+    snprintf(custom_patches, sizeof custom_patches, "%s" SEP "patches.py", game_dir);
+    if (env_patches && *env_patches && file_exists(env_patches)) {
+        add(&a, "--patches");
+        add(&a, env_patches);
+    } else if (file_exists(custom_patches)) {
+        add(&a, "--patches");
+        add(&a, custom_patches);
+    }
     if (GAMELIB_GEN_ARGS[0]) add_split(&a, GAMELIB_GEN_ARGS);
     g->p = spawn(a.v, g->log);
     args_free(&a);

@@ -34,18 +34,23 @@ foreach(t main_hook hook_impl)
   target_link_options(${t} PRIVATE "-Wl,-z,max-page-size=16384")  # (16 KB page devices, as libmain.so)
 endforeach()
 
+find_program(SH_PROGRAM NAMES sh bash PATHS "C:/Program Files/Git/bin" "C:/Program Files/Git/usr/bin")
+if(NOT SH_PROGRAM)
+  set(SH_PROGRAM sh)
+endif()
+
 # ---- the game code library's id (runtime/gamelib.h): the same script makes the library's
-execute_process(COMMAND ${ROOT}/tools/android/gamelib_id.sh OUTPUT_VARIABLE GAMELIB_ID OUTPUT_STRIP_TRAILING_WHITESPACE
+execute_process(COMMAND ${SH_PROGRAM} ${ROOT}/tools/android/gamelib_id.sh OUTPUT_VARIABLE GAMELIB_ID OUTPUT_STRIP_TRAILING_WHITESPACE
                 COMMAND_ERROR_IS_FATAL ANY)
-execute_process(COMMAND ${ROOT}/tools/android/gamelib_id.sh --flags OUTPUT_VARIABLE GAMELIB_FLAGS
+execute_process(COMMAND ${SH_PROGRAM} ${ROOT}/tools/android/gamelib_id.sh --flags OUTPUT_VARIABLE GAMELIB_FLAGS
                 OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
 # (building it on the phone, runtime/gamebuild.c: the same generator options and split-dispatch flags as build_game.sh)
-execute_process(COMMAND ${ROOT}/tools/android/gamelib_id.sh --split-flags OUTPUT_VARIABLE GAMELIB_SPLIT
+execute_process(COMMAND ${SH_PROGRAM} ${ROOT}/tools/android/gamelib_id.sh --split-flags OUTPUT_VARIABLE GAMELIB_SPLIT
                 OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
-execute_process(COMMAND ${ROOT}/tools/android/gamelib_id.sh --gen-args OUTPUT_VARIABLE GAMELIB_GENARGS
+execute_process(COMMAND ${SH_PROGRAM} ${ROOT}/tools/android/gamelib_id.sh --gen-args OUTPUT_VARIABLE GAMELIB_GENARGS
                 OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
 # (+ the compile-time-only options of the phone's compiler, zig clang 22: the same code, faster to build)
-execute_process(COMMAND ${ROOT}/tools/android/gamelib_id.sh --cc22-flags OUTPUT_VARIABLE GAMELIB_CC22
+execute_process(COMMAND ${SH_PROGRAM} ${ROOT}/tools/android/gamelib_id.sh --cc22-flags OUTPUT_VARIABLE GAMELIB_CC22
                 OUTPUT_STRIP_TRAILING_WHITESPACE COMMAND_ERROR_IS_FATAL ANY)
 foreach(f tools/gen.py tools/lifter.py tools/analyze.py tools/nso.py tools/passes.py tools/patches.py tools/simd_c.py
           tools/rando/patch_variants.json tools/gamelib_entry.c runtime/hle/hle_symbols.txt runtime/cpu.h runtime/simd.h
@@ -54,19 +59,21 @@ foreach(f tools/gen.py tools/lifter.py tools/analyze.py tools/nso.py tools/passe
 endforeach()
 message(STATUS "game code library id ${GAMELIB_ID}")
 
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
 # ---- SMAA's reference shader as a C string (as the Makefile: non-ASCII -> '?', no CR)
 set(SMAA_INC ${CMAKE_BINARY_DIR}/inc/smaa_hlsl.inc)
 add_custom_command(OUTPUT ${SMAA_INC}
   COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/inc
-  COMMAND sh -c "LC_ALL=C tr -d '\\r' < '${ROOT}/third_party/smaa/SMAA.hlsl' | LC_ALL=C tr '\\200-\\377' '?' | sed -e 's/\\\\/\\\\\\\\/g' -e 's/\"/\\\\\"/g' -e 's/^/\"/' -e 's/$/\\\\n\"/' > '${SMAA_INC}'"
-  DEPENDS ${ROOT}/third_party/smaa/SMAA.hlsl VERBATIM)
+  COMMAND ${Python3_EXECUTABLE} ${ROOT}/tools/gen_inc.py smaa ${ROOT}/third_party/smaa/SMAA.hlsl ${SMAA_INC}
+  DEPENDS ${ROOT}/third_party/smaa/SMAA.hlsl ${ROOT}/tools/gen_inc.py VERBATIM)
 
 # ---- the shader preparation's variant list as a C string (as the Makefile; runtime/nvn/shader_prep.c)
 set(VARIANTS_INC ${CMAKE_BINARY_DIR}/inc/shader_variants.inc)
 add_custom_command(OUTPUT ${VARIANTS_INC}
   COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/inc
-  COMMAND sh -c "(LC_ALL=C tr -d '\\r' < '${ROOT}/runtime/nvn/shader_variants.txt' | sed -e 's/\\\\/\\\\\\\\/g' -e 's/\"/\\\\\"/g' -e 's/^/\"/' -e 's/$/\\\\n\"/'; echo '\"\"') > '${VARIANTS_INC}'"
-  DEPENDS ${ROOT}/runtime/nvn/shader_variants.txt VERBATIM)
+  COMMAND ${Python3_EXECUTABLE} ${ROOT}/tools/gen_inc.py variants ${ROOT}/runtime/nvn/shader_variants.txt ${VARIANTS_INC}
+  DEPENDS ${ROOT}/runtime/nvn/shader_variants.txt ${ROOT}/tools/gen_inc.py VERBATIM)
 
 # ---- the runtime
 file(GLOB RT_SRC CONFIGURE_DEPENDS ${ROOT}/runtime/*.c ${ROOT}/runtime/hle/*.c ${ROOT}/runtime/services/*.c ${ROOT}/runtime/nvn/*.c
@@ -99,4 +106,4 @@ target_link_options(main PRIVATE "-Wl,-z,max-page-size=16384" "-Wl,-Bsymbolic" "
                                  "-Wl,-z,nostart-stop-gc")  # (the HLE / service / reset tables: sections kept whole)
 target_link_libraries(main PRIVATE SDL3::SDL3-shared
                       ${DEPS}/lib/libavformat.a ${DEPS}/lib/libavcodec.a ${DEPS}/lib/libswscale.a ${DEPS}/lib/libavutil.a
-                      ${DEPS}/lib/libshaderc_combined.a adrenotools android log m dl)
+                      ${DEPS}/lib/libshaderc_combined.a adrenotools android log m dl z)

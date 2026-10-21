@@ -1,0 +1,32 @@
+{
+  "format_version": 1,
+  "game_id": "01006bb00c6f0000",
+  "name": "The Legend of Zelda: Link's Awakening",
+  "version": "1.0.0",
+  "build_ids": [
+    "ae16f71e002af8cb"
+  ],
+  "author": "Nintendo / LASRecomp Team",
+  "min_hub_version": "1.0.0",
+  "requirements": {
+    "storage_mb": 7500,
+    "recommended_ram_gb": 6,
+    "supported_architectures": [
+      "arm64-v8a"
+    ]
+  },
+  "runtime_config": {
+    "base_resolution": [1920, 1080],
+    "default_orientation": "landscape_sensor",
+    "frame_rate_target": 60,
+    "frame_generation_supported": true,
+    "recommended_gpu_driver": "turnip",
+    "memory_pool_mb": 4096
+  },
+  "romfs_validator": {
+    "critical_files": [
+      "region_common/movie/movie_000.mp4"
+    ],
+    "min_file_count": 200
+  }
+}

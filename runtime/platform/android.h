@@ -40,6 +40,15 @@ void android_gpu_driver_install(void (*cb)(const char *error));
 // The folder picker for a fan translation as extracted; its romfs/ (the folder holding regionUS/) is copied into dest
 // on a thread of the app's, then cb (on that thread): NULL = done, else "nofolder", "notfound" or "copy:<details>".
 void android_import_translation(const char *dest, void (*cb)(const char *error));
+// Opens the file picker for a .recomp addon archive, installs it; cb gets NULL on success, "" if cancelled, else error
+void android_pick_addon(void (*cb)(const char *error));
+bool android_has_prod_keys(void);
+// The game's home-menu artwork (control.nacp, icon.jpg, icon.rgba) into dest, from the package in the folder picked
+// before, with the saved prod.keys; NULL when done, else why not (no package, no keys, ...)
+const char *android_import_artwork(const char *dest);
+// A content:// URI's file name (the file pickers hand those over), or NULL
+const char *android_display_name(const char *uri);
+void android_pick_prod_keys(void);
 // The name of a driver that failed at its last start (the system's runs instead), once; else NULL
 const char *android_gpu_driver_failed(void);
 // The selected driver for this start: false = the system's. Folders end with '/'. probe: a file to remove once the

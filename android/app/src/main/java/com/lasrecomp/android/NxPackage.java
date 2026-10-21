@@ -27,17 +27,51 @@ import javax.crypto.spec.SecretKeySpec;
 // (PFS0) and romfs (IVFC) - decrypted (AES-CTR) and written out file by file. Nothing is kept but those files.
 // Plain Java (no Android classes): `java NxPackage.java <package> <prod.keys> <dest>` runs it on a computer.
 final class NxPackage {
-    static final long TITLE_ID = 0x01006BB00C6F0000L;
+    static final long DEFAULT_TITLE_ID = 0x01006BB00C6F0000L;
 
     interface Progress { void at(long done, long total); }
 
-    // Returns null when done, else: "keys:<name>" (a key prod.keys doesn't have), "badkeys" (the header doesn't
-    // decrypt: wrong keys), "notgame" (no Link's Awakening program inside), "updateonly" (only an update of it),
-    // "version" (another version than buildId),
-    // "corrupt:<what>", "space:<bytes needed>", "copy:<details>"
-    static String extract(FileChannel pkg, Map<String, byte[]> keys, File dest, String buildId, Progress progress) {
+    public static final class TitleEntry {
+        public final long titleId;
+        public final String titleIdHex;
+        public final int contentType;
+        public final long size;
+        public final boolean isPatch;
+        public TitleEntry(long titleId, int contentType, long size, boolean isPatch) {
+            this.titleId = titleId;
+            this.titleIdHex = String.format(Locale.ROOT, "%016x", titleId).toLowerCase(Locale.ROOT);
+            this.contentType = contentType;
+            this.size = size;
+            this.isPatch = isPatch;
+        }
+    }
+
+    static List<TitleEntry> inspectTitles(FileChannel pkg, Map<String, byte[]> keys) {
+        List<TitleEntry> list = new ArrayList<>();
         try {
-            return new NxPackage(pkg, keys).run(dest, buildId, progress);
+            NxPackage p = new NxPackage(pkg, keys, 0L);
+            p.listPackage();
+            for (Entry e : p.ncas) {
+                try {
+                    byte[] hb = p.ncaHeader(e);
+                    ByteBuffer h = ByteBuffer.wrap(hb).order(ByteOrder.LITTLE_ENDIAN);
+                    if (h.getInt(0x200) != 0x3341434E) continue;
+                    long tid = h.getLong(0x210);
+                    int ctype = h.get(0x205) & 0xff;
+                    boolean patch = false;
+                    for (int s = 0; s < 4; s++) {
+                        patch |= h.getInt(0x244 + s * 16) != 0 && hb[0x400 + s * 0x200 + 4] == 4;
+                    }
+                    list.add(new TitleEntry(tid, ctype, e.size, patch));
+                } catch (Exception ignored) {}
+            }
+        } catch (Exception ignored) {}
+        return list;
+    }
+
+    static String extract(FileChannel pkg, Map<String, byte[]> keys, File dest, long titleId, String buildId, Progress progress) {
+        try {
+            return new NxPackage(pkg, keys, titleId).run(dest, buildId, progress);
         } catch (KeyMissing e) {
             return e.getMessage().equals("badkeys") ? "badkeys" : "keys:" + e.getMessage();
         } catch (Corrupt e) {
@@ -46,6 +80,10 @@ final class NxPackage {
         } catch (Exception e) {
             return "copy:" + e;
         }
+    }
+
+    static String extract(FileChannel pkg, Map<String, byte[]> keys, File dest, String buildId, Progress progress) {
+        return extract(pkg, keys, dest, 0L, buildId, progress);
     }
 
     // prod.keys / title.keys: "name = hex" lines
@@ -82,7 +120,14 @@ final class NxPackage {
         Entry(String name, long off, long size) { this.name = name; this.off = off; this.size = size; }
     }
 
-    private NxPackage(FileChannel pkg, Map<String, byte[]> keys) { this.pkg = pkg; this.keys = keys; }
+    private final long targetTitleId;
+    private long detectedTitleId;
+    private NxPackage(FileChannel pkg, Map<String, byte[]> keys, long targetTitleId) {
+        this.pkg = pkg;
+        this.keys = keys;
+        this.targetTitleId = targetTitleId;
+    }
+    public long getDetectedTitleId() { return detectedTitleId; }
 
     // ---- reading the package
 
@@ -236,6 +281,81 @@ final class NxPackage {
     private Section exefs, romfs;
     private long romfsBase;  // the RomFS inside its section (the IVFC's last level)
 
+    // An NCA's section key (AES-CTR): an eShop package's from its ticket's title key, a cartridge's from the key area
+    private byte[] contentKey(ByteBuffer h, byte[] hb) throws Exception {
+        int gen = Math.max(h.get(0x206) & 0xff, h.get(0x220) & 0xff), rev = gen > 0 ? gen - 1 : 0;
+        boolean rights = false;
+        for (int i = 0; i < 16; i++) rights |= h.get(0x230 + i) != 0;
+        if (rights) {
+            StringBuilder rid = new StringBuilder();
+            for (int i = 0; i < 16; i++) rid.append(String.format(Locale.ROOT, "%02x", h.get(0x230 + i) & 0xff));
+            byte[] tk = null;
+            for (Entry t : tickets)
+                if (t.name.toLowerCase(Locale.ROOT).startsWith(rid.toString()) && t.size >= 0x190) tk = read(t.off + 0x180, 16).array();
+            if (tk == null) tk = keys.get(rid.toString());  // (title.keys lines, if the player put them in too)
+            if (tk == null) throw new KeyMissing("title key " + rid);
+            return ecb(genKey("titlekek", rev, false), tk, true);
+        }
+        int idx = h.get(0x207) & 0xff;
+        String[] kak = {"key_area_key_application", "key_area_key_ocean", "key_area_key_system"};
+        if (idx > 2) throw new Corrupt("key area index");
+        byte[] area = new byte[16];
+        System.arraycopy(hb, 0x300 + 2 * 16, area, 0, 16);
+        return ecb(genKey(kak[idx], rev, true), area, true);
+    }
+
+    // The game's home-menu artwork from its control NCA (content type 2): control.nacp (its names, per language) and
+    // the icon (a 256x256 JPEG, icon_<language>.dat - American English if there) into dest as control.nacp and
+    // icon.jpg. Returns null when done, else what went wrong (as extract).
+    static String extractControl(FileChannel pkg, Map<String, byte[]> keys, File dest, long titleId) {
+        try {
+            return new NxPackage(pkg, keys, titleId).runControl(dest);
+        } catch (KeyMissing e) {
+            return e.getMessage().equals("badkeys") ? "badkeys" : "keys:" + e.getMessage();
+        } catch (Corrupt e) {
+            return "corrupt:" + e.getMessage();
+        } catch (Exception e) {
+            return "copy:" + e;
+        }
+    }
+
+    private String runControl(File dest) throws Exception {
+        listPackage();
+        Entry best = null;
+        byte[] bestHead = null;
+        for (Entry e : ncas) {
+            byte[] hb = ncaHeader(e);
+            ByteBuffer h = ByteBuffer.wrap(hb).order(ByteOrder.LITTLE_ENDIAN);
+            if (h.getInt(0x200) != 0x3341434E || h.get(0x205) != 2) continue;  // (NCA3, control)
+            if (targetTitleId != 0 && h.getLong(0x210) != targetTitleId) continue;  // (an update's has its own id)
+            if (best == null || e.size > best.size) { best = e; bestHead = hb; }
+        }
+        if (best == null) throw new Corrupt("nocontrol");
+        ByteBuffer h = ByteBuffer.wrap(bestHead).order(ByteOrder.LITTLE_ENDIAN);
+        byte[] key = contentKey(h, bestHead);
+        for (int s = 0; s < 4 && romfs == null; s++) {
+            long st = (h.getInt(0x240 + s * 16) & 0xffffffffL) * 0x200, en = (h.getInt(0x244 + s * 16) & 0xffffffffL) * 0x200;
+            if (st == 0 && en == 0) continue;
+            if (en <= st || en > best.size) throw new Corrupt("control section " + s);
+            ByteBuffer fsh = ByteBuffer.wrap(bestHead, 0x400 + s * 0x200, 0x200).slice().order(ByteOrder.LITTLE_ENDIAN);
+            if (fsh.get(2) != 0 || fsh.get(4) != 3) continue;  // (RomFS, AES-CTR)
+            romfs = new Section(best.off + st, st, en - st, key, fsh);
+        }
+        if (romfs == null || romfs.fsh.getInt(8) != 0x43465649) throw new Corrupt("control RomFS");
+        romfsBase = romfs.fsh.getLong(8 + 0x10 + 5 * 0x18);
+        RomFile nacp = null, icon = null;
+        for (RomFile f : romfsFiles()) {
+            if (f.path.equals("/control.nacp")) nacp = f;
+            else if (f.path.equals("/icon_AmericanEnglish.dat")) icon = f;
+            else if (icon == null && f.path.startsWith("/icon_") && f.path.endsWith(".dat")) icon = f;
+        }
+        if (nacp == null || nacp.size > (1 << 20) || (icon != null && icon.size > (4 << 20))) throw new Corrupt("control files");
+        if (!dest.isDirectory() && !dest.mkdirs()) throw new IOException("mkdir " + dest);
+        copyOut(romfs, nacp.off, nacp.size, new File(dest, "control.nacp"));
+        if (icon != null) copyOut(romfs, icon.off, icon.size, new File(dest, "icon.jpg"));
+        return null;
+    }
+
     // The game's base program: a package may also carry an update (a cartridge with its day-one patch, or an eShop
     // bundle): its program NCA has the same title id but patch sections (BKTR, encryption type 4) over the base's
     // RomFS and the update's exefs - never wanted, the recompilation is of v1.0.0. The largest base program wins.
@@ -248,7 +368,9 @@ final class NxPackage {
             ByteBuffer h = ByteBuffer.wrap(hb).order(ByteOrder.LITTLE_ENDIAN);
             if (h.getInt(0x200) != 0x3341434E) continue;  // "NCA3" (anything else: wrong header key, or an old format)
             anyHeader = true;
-            if (h.get(0x205) != 0 || h.getLong(0x210) != TITLE_ID) continue;  // (content type 0: program)
+            if (h.get(0x205) != 0) continue;  // (content type 0: program)
+            long tid = h.getLong(0x210);
+            if (targetTitleId != 0 && tid != targetTitleId) continue;
             boolean patch = false;
             for (int s = 0; s < 4; s++) patch |= h.getInt(0x244 + s * 16) != 0 && hb[0x400 + s * 0x200 + 4] == 4;
             anyPatch |= patch;
@@ -263,27 +385,8 @@ final class NxPackage {
             Entry e = cands.get(0);
             byte[] hb = heads.get(0);
             ByteBuffer h = ByteBuffer.wrap(hb).order(ByteOrder.LITTLE_ENDIAN);
-            int gen = Math.max(h.get(0x206) & 0xff, h.get(0x220) & 0xff), rev = gen > 0 ? gen - 1 : 0;
-            boolean rights = false;
-            for (int i = 0; i < 16; i++) rights |= h.get(0x230 + i) != 0;
-            byte[] ctrKey;
-            if (rights) {  // (an eShop package: the title key from its ticket)
-                StringBuilder rid = new StringBuilder();
-                for (int i = 0; i < 16; i++) rid.append(String.format(Locale.ROOT, "%02x", h.get(0x230 + i) & 0xff));
-                byte[] tk = null;
-                for (Entry t : tickets)
-                    if (t.name.toLowerCase(Locale.ROOT).startsWith(rid.toString()) && t.size >= 0x190) tk = read(t.off + 0x180, 16).array();
-                if (tk == null) tk = keys.get(rid.toString());  // (title.keys lines, if the player put them in too)
-                if (tk == null) throw new KeyMissing("title key " + rid);
-                ctrKey = ecb(genKey("titlekek", rev, false), tk, true);
-            } else {
-                int idx = h.get(0x207) & 0xff;
-                String[] kak = {"key_area_key_application", "key_area_key_ocean", "key_area_key_system"};
-                if (idx > 2) throw new Corrupt("key area index");
-                byte[] area = new byte[16];
-                System.arraycopy(hb, 0x300 + 2 * 16, area, 0, 16);
-                ctrKey = ecb(genKey(kak[idx], rev, true), area, true);
-            }
+            detectedTitleId = h.getLong(0x210);
+            byte[] ctrKey = contentKey(h, hb);
             for (int s = 0; s < 4; s++) {  // (exefs: the first PFS0 - the logo's comes after it; romfs)
                 long st = (h.getInt(0x240 + s * 16) & 0xffffffffL) * 0x200, en = (h.getInt(0x244 + s * 16) & 0xffffffffL) * 0x200;
                 if (st == 0 && en == 0) continue;
@@ -421,7 +524,7 @@ final class NxPackage {
     static String describe(FileChannel pkg, Map<String, byte[]> keys) {
         StringBuilder sb = new StringBuilder();
         try {
-            NxPackage p = new NxPackage(pkg, keys);
+            NxPackage p = new NxPackage(pkg, keys, 0L);
             p.listPackage();
             for (Entry e : p.ncas) {
                 ByteBuffer h = ByteBuffer.wrap(p.ncaHeader(e)).order(ByteOrder.LITTLE_ENDIAN);

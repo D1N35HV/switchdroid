@@ -1,0 +1,29 @@
+# Addon checks: manifests and layout under addons/ (tools/validate_addon.py) and a scan of the files a pull request adds
+# for game, key or executable data. Needs no game files.
+name: Addons
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: addons-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Validate addons
+        run: python tools/validate_addon.py
+      - name: No game, key or executable files added
+        if: github.event_name == 'pull_request'
+        run: |
+          git diff --name-only --diff-filter=A "origin/${{ github.base_ref }}...HEAD" \
+            | python tools/validate_addon.py --scan-names

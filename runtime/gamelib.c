@@ -41,20 +41,30 @@ static bool exists(const char *p) {
 // Android: the app's internal storage (where a library built for this phone is put: the data folder is on external
 // storage, mounted without exec), then one packed into the APK itself, opened by its bare name (it lives inside the
 // APK: no file to look at, its own id decides).
-static int candidates(const char *game_dir, char out[3][1100]) {
+static int candidates(const char *game_dir, char out[8][1100]) {
     int n = 0;
     const char *env = getenv("LARECOMP_GAME_LIB");
     if (env && *env) snprintf(out[n++], 1100, "%s", env);
 #ifdef __ANDROID__
-    (void)game_dir;
     const char *internal = SDL_GetAndroidInternalStoragePath();
+    if (game_dir && *game_dir) {
+        if (internal) {
+            snprintf(out[n++], 1100, "%s/%s/%s", internal, game_dir, GAMELIB_NAME);
+            snprintf(out[n++], 1100, "%s/%s/libgame.so", internal, game_dir);
+        }
+        snprintf(out[n++], 1100, "%s/%s", game_dir, GAMELIB_NAME);
+        snprintf(out[n++], 1100, "%s/libgame.so", game_dir);
+    }
     if (internal) snprintf(out[n++], 1100, "%s/%s", internal, GAMELIB_NAME);
     snprintf(out[n++], 1100, "%s", GAMELIB_NAME);
 #else
     char exe_side[1024];
     if (rt_resource(GAMELIB_NAME, NULL, exe_side, sizeof exe_side) && exists(exe_side))
         snprintf(out[n++], 1100, "%s", exe_side);
-    if (game_dir) snprintf(out[n++], 1100, "%s/%s", game_dir, GAMELIB_NAME);
+    if (game_dir && *game_dir) {
+        snprintf(out[n++], 1100, "%s/%s", game_dir, GAMELIB_NAME);
+        snprintf(out[n++], 1100, "%s/libgame.so", game_dir);
+    }
 #endif
     return n;
 }
@@ -63,7 +73,7 @@ static bool in_apk(const char *c) { return !strchr(c, '/'); }  // (Android: a ba
 
 bool gamelib_present(const char *game_dir) {
     if (g_tables) return true;
-    char c[3][1100];
+    char c[8][1100];
     int n = candidates(game_dir, c);
     for (int i = 0; i < n; i++) {
         if (in_apk(c[i])) {  // (loading it is the only way to look: the library stays loaded for the game)
@@ -112,7 +122,7 @@ static const GameLibTables *open_lib(const char *path) {
 bool gamelib_load(const char *game_dir, char *why, size_t why_size) {
     if (!g_tables) {  // (again until one loads: a library can be installed while the start screen is up)
         snprintf(g_error, sizeof g_error, "the game code hasn't been built: set up the game files on the start screen");
-        char c[3][1100];
+        char c[8][1100];
         int n = candidates(game_dir, c);
         const char *env = getenv("LARECOMP_GAME_LIB");
         for (int i = 0; i < n && !g_tables; i++) {

@@ -20,6 +20,8 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.ByteBuffer;
+import java.nio.ByteOrder;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -34,6 +36,7 @@ public class LasActivity extends SDLActivity {
     private static final int PICK_DRIVER = 4101;
     private static final int PICK_TRANSLATION = 4102;
     private static final int PICK_KEYS = 4103;
+    private static final int PICK_ADDON = 4105;
     private static Uri sTree;  // the folder picked last (read permission kept across restarts)
 
     @Override
@@ -43,6 +46,19 @@ public class LasActivity extends SDLActivity {
 
     @Override
     protected void onCreate(Bundle state) {
+        android.view.Window w = getWindow();
+        if (w != null) {
+            if (android.os.Build.VERSION.SDK_INT >= 30) {
+                w.setDecorFitsSystemWindows(false);
+                WindowManager.LayoutParams lp = w.getAttributes();
+                lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
+                w.setAttributes(lp);
+            } else if (android.os.Build.VERSION.SDK_INT >= 28) {
+                WindowManager.LayoutParams lp = w.getAttributes();
+                lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES;
+                w.setAttributes(lp);
+            }
+        }
         super.onCreate(state);
         String saved = getPreferences(MODE_PRIVATE).getString("tree", null);
         if (saved != null) sTree = Uri.parse(saved);
@@ -197,11 +213,36 @@ public class LasActivity extends SDLActivity {
 
     // The whole screen for the game: status and navigation bars hidden, a swipe from the edge shows them for a moment
     // (Android 15+ ignores the theme's fullscreen: apps draw edge to edge)
+    @Override
+    public void onAttachedToWindow() {
+        super.onAttachedToWindow();
+        immersive();
+    }
+
     private void immersive() {
-        WindowInsetsController c = getWindow().getInsetsController();
-        if (c == null) return;
-        c.hide(WindowInsets.Type.systemBars());
-        c.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+        android.view.Window w = getWindow();
+        if (w == null) return;
+        if (android.os.Build.VERSION.SDK_INT >= 30) {
+            w.setDecorFitsSystemWindows(false);
+            WindowManager.LayoutParams lp = w.getAttributes();
+            lp.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS;
+            w.setAttributes(lp);
+            WindowInsetsController c = w.getInsetsController();
+            if (c != null) {
+                c.hide(WindowInsets.Type.systemBars());
+                c.setSystemBarsBehavior(WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+            }
+        } else {
+            View d = w.getDecorView();
+            d.setSystemUiVisibility(
+                View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                | View.SYSTEM_UI_FLAG_FULLSCREEN
+                | View.SYSTEM_UI_FLAG_HIDE_NAVIGATION
+                | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
+                | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION
+                | View.SYSTEM_UI_FLAG_LAYOUT_STABLE
+            );
+        }
     }
 
     // ---- called from native code (runtime/platform/android_jni.c)
@@ -243,6 +284,7 @@ public class LasActivity extends SDLActivity {
         if (request == PICK_DRIVER) { driverPicked(result == RESULT_OK && data != null ? data.getData() : null); return; }
         if (request == PICK_KEYS) { keysPicked(result == RESULT_OK && data != null ? data.getData() : null); return; }
         if (request == PICK_TRANSLATION) { translationPicked(result == RESULT_OK && data != null ? data.getData() : null); return; }
+        if (request == PICK_ADDON) { addonPicked(result == RESULT_OK && data != null ? data.getData() : null); return; }
         if (request != PICK_FOLDER) { super.onActivityResult(request, result, data); return; }
         Uri tree = result == RESULT_OK && data != null ? data.getData() : null;
         if (tree != null) {
@@ -285,7 +327,7 @@ public class LasActivity extends SDLActivity {
             if ((found[0] == null || found[1] == null) && found[2] != null) return importPackage(a, cr, found, dest, buildId);
             if (found[0] == null || found[1] == null) return unusable[0] ? "unusable" : "notfound";
             // the version first (exefs/main's build id at 0x40: runtime/ui/launcher.mm BUILD_ID), before ~6 GB of copy
-            if (buildId != null && !buildId.isEmpty()) {
+            if (buildId != null && !buildId.isEmpty() && !buildId.equalsIgnoreCase("auto")) {
                 String have = null;
                 for (Doc k : children(cr, found[0])) {
                     if (k.dir || !k.name.equals("main")) continue;
@@ -351,15 +393,26 @@ public class LasActivity extends SDLActivity {
     // too (an eShop package without its ticket).
     private static String importPackage(LasActivity a, ContentResolver cr, Doc[] found, String dest, String buildId) {
         Doc pkg = found[2];
-        java.util.Map<String, byte[]> keys;
-        Uri ku = found[3] != null ? DocumentsContract.buildDocumentUriUsingTree(sTree, found[3].id) : pickKeys(a);
-        if (ku == null) return "nokeys";
-        try (InputStream in = cr.openInputStream(ku)) {
-            if (in == null) return "nokeys";
-            keys = NxPackage.parseKeys(in);
-        } catch (Exception e) {
-            Log.e(TAG, "keys", e);
-            return "nokeys";
+        java.util.Map<String, byte[]> keys = null;
+        Uri ku = found[3] != null ? DocumentsContract.buildDocumentUriUsingTree(sTree, found[3].id) : null;
+        if (ku == null) {
+            File saved = new File(a.getExternalFilesDir(null), "keys/prod.keys");
+            if (saved.isFile() && saved.length() > 0) {
+                try (InputStream in = new java.io.FileInputStream(saved)) {
+                    keys = NxPackage.parseKeys(in);
+                } catch (Exception ignored) {}
+            }
+        }
+        if (keys == null) {
+            if (ku == null) ku = pickKeys(a);
+            if (ku == null) return "nokeys";
+            try (InputStream in = cr.openInputStream(ku)) {
+                if (in == null) return "nokeys";
+                keys = NxPackage.parseKeys(in);
+            } catch (Exception e) {
+                Log.e(TAG, "keys", e);
+                return "nokeys";
+            }
         }
         if (!keys.containsKey("header_key")) return "badkeys";
         if (found[4] != null)
@@ -374,15 +427,92 @@ public class LasActivity extends SDLActivity {
             try (java.io.FileInputStream fin = new java.io.FileInputStream(fd.getFileDescriptor());
                  java.nio.channels.FileChannel ch = fin.getChannel()) {
                 long t0 = System.nanoTime();
-                String r = NxPackage.extract(ch, keys, new File(dest), buildId, LasActivity::nativeImportProgress);
+                String effectiveBuildId = (buildId != null && buildId.equalsIgnoreCase("auto")) ? null : buildId;
+                String r = NxPackage.extract(ch, keys, new File(dest), effectiveBuildId, LasActivity::nativeImportProgress);
                 Log.i(TAG, "package " + pkg.name + ": " + (r == null ? "extracted" : r) + " in " + (System.nanoTime() - t0) / 1000000 + " ms");
-                if (r == null) applyTranslationPatch(a);
+                if (r == null) {
+                    applyTranslationPatch(a);
+                    artworkFrom(ch, keys, new File(dest, "control"));  // (the home screen's tile; failing is fine)
+                }
                 return r;
             }
         } catch (Exception e) {
             Log.e(TAG, "package", e);
             return "copy:" + e.getMessage();
         }
+    }
+
+    // The game's home-menu artwork (NxPackage.extractControl: control.nacp, icon.jpg) into dest, and the icon again as
+    // icon.rgba - width and height (int32, little-endian), then RGBA pixels - for the start screen, whose FFmpeg has
+    // no JPEG decoder. Returns null when done, else why not.
+    private static String artworkFrom(java.nio.channels.FileChannel ch, java.util.Map<String, byte[]> keys, File dest) {
+        String r = NxPackage.extractControl(ch, keys, dest, NxPackage.DEFAULT_TITLE_ID);
+        if (r != null) { Log.w(TAG, "artwork: " + r); return r; }
+        android.graphics.Bitmap bm = android.graphics.BitmapFactory.decodeFile(new File(dest, "icon.jpg").getPath());
+        if (bm == null) return "noicon";
+        int w = bm.getWidth(), h = bm.getHeight();
+        int[] px = new int[w * h];
+        bm.getPixels(px, 0, w, 0, 0, w, h);
+        bm.recycle();
+        ByteBuffer out = ByteBuffer.allocate(8 + px.length * 4).order(ByteOrder.LITTLE_ENDIAN);
+        out.putInt(w).putInt(h);
+        for (int p : px) out.put((byte) (p >> 16)).put((byte) (p >> 8)).put((byte) p).put((byte) (p >>> 24));
+        File tmp = new File(dest, "icon.rgba.part");
+        try (FileOutputStream os = new FileOutputStream(tmp)) {
+            os.write(out.array());
+        } catch (Exception e) {
+            return "copy:" + e.getMessage();
+        }
+        return tmp.renameTo(new File(dest, "icon.rgba")) ? null : "copy:rename";
+    }
+
+    // The artwork for game files set up before it was taken along (artworkFrom): from the package in the folder picked
+    // then, with the saved prod.keys or the folder's - never asking. Runs on the calling (native) thread. Returns null
+    // when done, else why not: "nofolder", "nopackage" (extracted folders: no control section), "nokeys", ...
+    public static String importArtwork(String dest) {
+        LasActivity a = (LasActivity) mSingleton;
+        if (a == null || sTree == null) return "nofolder";
+        ContentResolver cr = a.getContentResolver();
+        try {
+            Doc[] found = new Doc[5];
+            find(cr, new Doc(DocumentsContract.getTreeDocumentId(sTree), describe(sTree), true, 0), 0, found, new boolean[1]);
+            if (found[2] == null) return "nopackage";
+            java.util.Map<String, byte[]> keys = null;
+            File saved = new File(a.getExternalFilesDir(null), "keys/prod.keys");
+            Uri ku = found[3] != null ? DocumentsContract.buildDocumentUriUsingTree(sTree, found[3].id) : null;
+            try (InputStream in = ku != null ? cr.openInputStream(ku) : saved.isFile() ? new java.io.FileInputStream(saved) : null) {
+                if (in != null) keys = NxPackage.parseKeys(in);
+            }
+            if (keys == null || !keys.containsKey("header_key")) return "nokeys";
+            if (found[4] != null)
+                try (InputStream in = cr.openInputStream(DocumentsContract.buildDocumentUriUsingTree(sTree, found[4].id))) {
+                    if (in != null) for (java.util.Map.Entry<String, byte[]> e : NxPackage.parseKeys(in).entrySet()) keys.putIfAbsent(e.getKey(), e.getValue());
+                }
+            try (android.os.ParcelFileDescriptor fd = cr.openFileDescriptor(DocumentsContract.buildDocumentUriUsingTree(sTree, found[2].id), "r")) {
+                if (fd == null) return "copy:" + found[2].name;
+                try (java.io.FileInputStream fin = new java.io.FileInputStream(fd.getFileDescriptor())) {
+                    String r = artworkFrom(fin.getChannel(), keys, new File(dest));
+                    Log.i(TAG, "artwork from " + found[2].name + ": " + (r == null ? "done" : r));
+                    return r;
+                }
+            }
+        } catch (Exception e) {
+            Log.e(TAG, "artwork", e);
+            return "copy:" + e.getMessage();
+        }
+    }
+
+    // A content:// URI's file name (what the file pickers hand native code), or null
+    public static String displayName(String uri) {
+        LasActivity a = (LasActivity) mSingleton;
+        if (a == null) return null;
+        try (Cursor c = a.getContentResolver().query(Uri.parse(uri), new String[] {android.provider.OpenableColumns.DISPLAY_NAME},
+                                                     null, null, null)) {
+            if (c != null && c.moveToFirst()) return c.getString(0);
+        } catch (Exception e) {
+            Log.w(TAG, "display name of " + uri, e);
+        }
+        return null;
     }
 
     // The system's file picker for prod.keys, from the import's (native) thread: waits for the choice
@@ -409,7 +539,44 @@ public class LasActivity extends SDLActivity {
             return sKeysPicked;
         }
     }
+    public static void pickProdKeys() {
+        LasActivity a = (LasActivity) mSingleton;
+        if (a == null) return;
+        a.runOnUiThread(() -> {
+            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            i.addCategory(Intent.CATEGORY_OPENABLE);
+            i.setType("*/*");
+            try {
+                a.startActivityForResult(i, PICK_KEYS);
+            } catch (Exception e) {
+                Log.e(TAG, "keys picker", e);
+            }
+        });
+    }
+
+    public static boolean hasProdKeys() {
+        LasActivity a = (LasActivity) mSingleton;
+        if (a == null) return false;
+        File saved = new File(a.getExternalFilesDir(null), "keys/prod.keys");
+        return saved.isFile() && saved.length() > 0;
+    }
+
     private void keysPicked(Uri uri) {
+        if (uri != null) {
+            try {
+                File kdir = new File(getExternalFilesDir(null), "keys");
+                if (!kdir.isDirectory()) kdir.mkdirs();
+                try (InputStream in = getContentResolver().openInputStream(uri);
+                     OutputStream out = new FileOutputStream(new File(kdir, "prod.keys"))) {
+                    if (in != null) {
+                        byte[] buf = new byte[8192];
+                        for (int n; (n = in.read(buf)) > 0; ) out.write(buf, 0, n);
+                    }
+                }
+            } catch (Exception e) {
+                Log.w(TAG, "keys persistence", e);
+            }
+        }
         synchronized (sKeysLock) { sKeysPicked = uri; sKeysDone = true; sKeysLock.notifyAll(); }
     }
 
@@ -699,4 +866,51 @@ public class LasActivity extends SDLActivity {
     public static native void nativeImportProgress(long done, long total);
     public static native void nativeGpuDriverInstalled(String error);
     public static native void nativeTranslationImported(String error);
+    public static native void nativeAddonInstalled(String error);
+
+    // Pick and install a .recomp addon package
+    public static void pickAddon() {
+        final LasActivity a = (LasActivity) mSingleton;
+        if (a == null) return;
+        a.runOnUiThread(() -> {
+            Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+            i.addCategory(Intent.CATEGORY_OPENABLE);
+            i.setType("*/*");
+            try {
+                a.startActivityForResult(i, PICK_ADDON);
+            } catch (Exception e) {
+                Log.e(TAG, "addon picker", e);
+                nativeAddonInstalled("picker error: " + e.getMessage());
+            }
+        });
+    }
+
+    private void addonPicked(Uri uri) {
+        if (uri == null) {
+            nativeAddonInstalled(""); // cancelled
+            return;
+        }
+        new Thread(() -> {
+            try {
+                File tempDir = new File(getCacheDir(), "addons_temp");
+                if (!tempDir.isDirectory()) tempDir.mkdirs();
+                File tempZip = new File(tempDir, "incoming.recomp");
+                try (InputStream in = getContentResolver().openInputStream(uri);
+                     OutputStream out = new FileOutputStream(tempZip)) {
+                    if (in == null) {
+                        nativeAddonInstalled("cannot read addon file");
+                        return;
+                    }
+                    byte[] buf = new byte[8192];
+                    for (int n; (n = in.read(buf)) > 0; ) out.write(buf, 0, n);
+                }
+                AddonManager mgr = AddonManager.getInstance(getExternalFilesDir(null));
+                boolean ok = mgr.installRecompArchive(tempZip);
+                nativeAddonInstalled(ok ? null : "failed to install addon");
+            } catch (Exception e) {
+                Log.e(TAG, "addon install", e);
+                nativeAddonInstalled("error: " + e.getMessage());
+            }
+        }, "addon install").start();
+    }
 }

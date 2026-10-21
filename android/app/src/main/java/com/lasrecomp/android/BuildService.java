@@ -80,8 +80,8 @@ public class BuildService extends Service {
         super.onDestroy();
     }
 
-    @Override
-    public void onTimeout(int startId, int fgsType) {  // (Android 15: dataSync's daily limit - the build goes on)
+    // (Android 15: dataSync's daily limit - the build goes on)
+    public void onTimeout(int startId, int fgsType) {
         stopSelf();
     }
 

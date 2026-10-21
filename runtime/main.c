@@ -229,7 +229,10 @@ int main(int argc, char **argv) {
     for (bool title = !skip_launcher;;) {
         if (title) {  // start screen (runtime/ui/launcher.mm): game files setup, seed choice, settings
             extern void launcher_run(const char *root);
+            extern const char *launcher_selected_root(void);
             launcher_run(root);
+            const char *sel = launcher_selected_root();
+            if (sel && *sel) root = sel;
         }
         boot(root);
         int kind = ui_run();  // window and input on the main thread; returns when a reboot is requested

@@ -23,6 +23,71 @@ static jmethodID activity_method(JNIEnv **env, jclass *cls, const char *name, co
     return m;
 }
 
+
+bool android_has_prod_keys(void) {
+    JNIEnv *env;
+    jclass cls;
+    jmethodID m = activity_method(&env, &cls, "hasProdKeys", "()Z");
+    if (!m) return false;
+    jboolean r = (*env)->CallStaticBooleanMethod(env, cls, m);
+    (*env)->DeleteLocalRef(env, cls);
+    return r;
+}
+
+void android_pick_prod_keys(void) {
+    JNIEnv *env;
+    jclass cls;
+    jmethodID m = activity_method(&env, &cls, "pickProdKeys", "()V");
+    if (!m) return;
+    (*env)->CallStaticVoidMethod(env, cls, m);
+    (*env)->DeleteLocalRef(env, cls);
+}
+
+// The game's home-menu artwork into dest (LasActivity.importArtwork): NULL when done, else why not
+const char *android_import_artwork(const char *dest) {
+    static char result[256];
+    JNIEnv *env;
+    jclass cls;
+    jmethodID m = activity_method(&env, &cls, "importArtwork", "(Ljava/lang/String;)Ljava/lang/String;");
+    if (!m) return "no activity";
+    jstring jdest = (*env)->NewStringUTF(env, dest);
+    jstring r = (jstring)(*env)->CallStaticObjectMethod(env, cls, m, jdest);
+    const char *out = NULL;
+    if ((*env)->ExceptionCheck(env)) { (*env)->ExceptionClear(env); snprintf(result, sizeof result, "exception"); out = result; }
+    else if (r) {
+        const char *s = (*env)->GetStringUTFChars(env, r, NULL);
+        snprintf(result, sizeof result, "%s", s ? s : "?");
+        if (s) (*env)->ReleaseStringUTFChars(env, r, s);
+        (*env)->DeleteLocalRef(env, r);
+        out = result;
+    }
+    (*env)->DeleteLocalRef(env, jdest);
+    (*env)->DeleteLocalRef(env, cls);
+    return out;
+}
+
+// A content:// URI's file name (LasActivity.displayName), or NULL
+const char *android_display_name(const char *uri) {
+    static char result[512];
+    JNIEnv *env;
+    jclass cls;
+    jmethodID m = activity_method(&env, &cls, "displayName", "(Ljava/lang/String;)Ljava/lang/String;");
+    if (!m) return NULL;
+    jstring ju = (*env)->NewStringUTF(env, uri);
+    jstring r = (jstring)(*env)->CallStaticObjectMethod(env, cls, m, ju);
+    const char *out = NULL;
+    if ((*env)->ExceptionCheck(env)) (*env)->ExceptionClear(env);
+    else if (r) {
+        const char *s = (*env)->GetStringUTFChars(env, r, NULL);
+        if (s) snprintf(result, sizeof result, "%s", s), out = result;
+        if (s) (*env)->ReleaseStringUTFChars(env, r, s);
+        (*env)->DeleteLocalRef(env, r);
+    }
+    (*env)->DeleteLocalRef(env, ju);
+    (*env)->DeleteLocalRef(env, cls);
+    return out;
+}
+
 void android_pick_game_folder(void (*cb)(const char *name)) {
     g_pick_cb = cb;
     JNIEnv *env;
@@ -225,5 +290,25 @@ JNIEXPORT void JNICALL Java_com_lasrecomp_android_LasActivity_nativeTranslationI
     (void)cls;
     const char *s = error ? (*env)->GetStringUTFChars(env, error, NULL) : NULL;
     if (g_translation_cb) g_translation_cb(s);
+    if (s) (*env)->ReleaseStringUTFChars(env, error, s);
+}
+
+// ---- .recomp addon install (LasActivity.pickAddon)
+static void (*g_addon_cb)(const char *error);
+
+void android_pick_addon(void (*cb)(const char *error)) {
+    g_addon_cb = cb;
+    JNIEnv *env;
+    jclass cls;
+    jmethodID m = activity_method(&env, &cls, "pickAddon", "()V");
+    if (!m) { if (cb) cb("no activity"); return; }
+    (*env)->CallStaticVoidMethod(env, cls, m);
+    (*env)->DeleteLocalRef(env, cls);
+}
+
+JNIEXPORT void JNICALL Java_com_lasrecomp_android_LasActivity_nativeAddonInstalled(JNIEnv *env, jclass cls, jstring error) {
+    (void)cls;
+    const char *s = error ? (*env)->GetStringUTFChars(env, error, NULL) : NULL;
+    if (g_addon_cb) g_addon_cb(s);
     if (s) (*env)->ReleaseStringUTFChars(env, error, s);
 }

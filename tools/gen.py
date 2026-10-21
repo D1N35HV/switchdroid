@@ -496,7 +496,10 @@ class Module:
         return out
 
 
-from patches import HOOKS, PATCHES
+try:
+    from patches import HOOKS, PATCHES
+except Exception:
+    HOOKS, PATCHES = {}, {}
 
 import json as _json
 import os as _os
@@ -554,9 +557,19 @@ def main():
     # with -mllvm -disable-licm-promotion (tools/android/gamelib_id.sh --split-flags), the rest unchanged.
     ap.add_argument('--split-dispatch', type=int, default=0)
     ap.add_argument('--hot')  # (a relative path is next to this script)
+    ap.add_argument('--patches')  # custom patches.py for specific game profile
     args = ap.parse_args()
-    global SHIFT, HOT
+    global SHIFT, HOT, HOOKS, PATCHES
     SHIFT = args.shift
+    if args.patches and os.path.exists(args.patches):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("custom_patches", args.patches)
+        custom_mod = importlib.util.module_from_spec(spec)
+        sys.modules["custom_patches"] = custom_mod
+        spec.loader.exec_module(custom_mod)
+        HOOKS = getattr(custom_mod, "HOOKS", {})
+        PATCHES = getattr(custom_mod, "PATCHES", {})
+        print(f"Loaded custom patches from {args.patches} ({len(HOOKS)} hooks, {len(PATCHES)} patches)", file=sys.stderr)
     if args.hot:
         path = args.hot if os.path.isabs(args.hot) else os.path.join(os.path.dirname(os.path.abspath(__file__)), args.hot)
         HOT = {int(l.split()[1], 16) for l in open(path) if l.split()[:1] == [args.name]}

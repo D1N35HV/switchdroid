@@ -19,6 +19,20 @@ Nothing owned by Nintendo may ever be committed or attached to an issue or pull 
 
 Pull requests that include Nintendo files can't be merged. Screenshots and short clips of the game in bug reports are fine.
 
+## Adding a game
+
+Games are added as addons under `addons/<title_id>/` (format: [docs/ADDON_GUIDE.md](docs/ADDON_GUIDE.md)). You don't
+touch the core to add a game's metadata.
+
+1. Create it: `python tools/new_addon.py <title_id> "<name>" --build-id <build_id> --author "<you>"`.
+2. Fill in `romfs_validator` from your own dump, and credit any community project you reuse under `upstream` (name,
+   URL, license). Don't copy code from a project with no stated license: ask its author first.
+3. Check it: `python tools/validate_addon.py addons/<title_id>`. CI runs the same check.
+4. In the pull request, say which game version and device you tested on.
+
+An addon holds metadata, lifter patches (`lifter/`), touch layout and icons (`overlay/`) and your own artwork
+(`assets/`) - never game data, keys, executables or anything generated from them. The validator and CI reject these.
+
 ## Reporting bugs
 
 Report bugs as a [GitHub issue](https://github.com/peiikai/LASRecomp/issues). Please include:
